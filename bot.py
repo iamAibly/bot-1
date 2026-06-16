@@ -14,6 +14,7 @@ from aiogram.types import Message
 
 # ================= КОНФИГУРАЦИЯ =================
 API_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
+CONFIG_FILE = os.getenv('CONFIG_FILE', 'config.json')
 
 # Настройки по умолчанию
 DEFAULT_CONFIG = {
@@ -36,35 +37,36 @@ dp = Dispatcher(storage=storage)
 
 # ================= ЗАГРУЗКА/СОХРАНЕНИЕ КОНФИГА =================
 def load_config():
-    """Загружает конфиг из переменных BotHost"""
+    """Загружает конфиг из файла или переменных окружения"""
     config = DEFAULT_CONFIG.copy()
     
-    if 'BOTHOST_VARS' in os.environ:
+    # Пробуем загрузить из файла
+    if os.path.exists(CONFIG_FILE):
         try:
-            vars_data = json.loads(os.environ['BOTHOST_VARS'])
-            if 'bot_config' in vars_data:
-                config.update(json.loads(vars_data['bot_config']))
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                file_config = json.load(f)
+                config.update(file_config)
+                logging.info(f"Конфиг загружен из файла: {CONFIG_FILE}")
         except Exception as e:
-            logging.error(f"Ошибка загрузки конфига: {e}")
+            logging.error(f"Ошибка загрузки конфига из файла: {e}")
+    
+    # Переменные окружения имеют приоритет
+    if 'BOT_CONFIG' in os.environ:
+        try:
+            env_config = json.loads(os.environ['BOT_CONFIG'])
+            config.update(env_config)
+            logging.info("Конфиг загружен из переменной BOT_CONFIG")
+        except Exception as e:
+            logging.error(f"Ошибка загрузки конфига из переменных: {e}")
     
     return config
 
 def save_config(config):
-    """Сохраняет конфиг в переменные BotHost"""
+    """Сохраняет конфиг в файл"""
     try:
-        # Обновляем существующие переменные
-        if 'BOTHOST_VARS' in os.environ:
-            vars_data = json.loads(os.environ['BOTHOST_VARS'])
-        else:
-            vars_data = {}
-        
-        vars_data['bot_config'] = json.dumps(config, ensure_ascii=False)
-        os.environ['BOTHOST_VARS'] = json.dumps(vars_data, ensure_ascii=False)
-        
-        # Для BotHost нужно сохранить через файл (обходное решение)
-        with open('config.json', 'w', encoding='utf-8') as f:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
-        
+        logging.info(f"Конфиг сохранен в файл: {CONFIG_FILE}")
         return True
     except Exception as e:
         logging.error(f"Ошибка сохранения конфига: {e}")
@@ -77,23 +79,11 @@ class AdminStates(StatesGroup):
     waiting_for_admin_id = State()
     waiting_for_sponsor_link = State()
     waiting_for_edit_sponsor = State()
-    waiting_for_mode = State()
-
-class UserStates(StatesGroup):
-    waiting_for_confirm = State()
 
 # ================= ХРАНИЛИЩЕ ДАННЫХ =================
 user_data = {}
-temp_data = {}
 
 # ================= КЛАВИАТУРЫ =================
-
-def get_main_keyboard():
-    """Главная клавиатура для пользователя"""
-    keyboard = [
-        [InlineKeyboardButton(text="🚀 Активировать бота", callback_data="activate")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_admin_panel():
     """Главная админ-панель"""
@@ -108,11 +98,10 @@ def get_admin_panel():
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_sponsors_list_keyboard():
-    """Клавиатура со списком спонсоров и кнопками управления"""
+    """Клавиатура со списком спонсоров"""
     keyboard = []
     
     for idx, sponsor in enumerate(config['sponsors'], 1):
-        # Обрезаем длинные ссылки для красоты
         display_text = sponsor[:30] + "..." if len(sponsor) > 30 else sponsor
         keyboard.append([
             InlineKeyboardButton(
@@ -136,7 +125,7 @@ def get_sponsors_list_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_mode_keyboard():
-    """Клавиатура выбора режима сообщений"""
+    """Клавиатура выбора режима"""
     current_mode = config.get('mode', 1)
     keyboard = []
     
@@ -157,11 +146,11 @@ def get_settings_keyboard():
     min_clicks = config.get('min_clicks', 0)
     keyboard = [
         [InlineKeyboardButton(
-            text=f"📌 Минимальное кол-во кликов: {min_clicks}",
+            text=f"📌 Мин. кликов: {min_clicks}",
             callback_data="settings_min_clicks"
         )],
         [InlineKeyboardButton(
-            text=f"👑 ID админа: {config.get('admin_id', 'Не установлен')}",
+            text=f"👑 Админ: {config.get('admin_id', 'Не установлен')}",
             callback_data="settings_admin_id"
         )],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
@@ -169,7 +158,7 @@ def get_settings_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_activation_keyboard(sponsors_count):
-    """Клавиатура активации со спонсорами"""
+    """Клавиатура активации"""
     keyboard = []
     
     for idx, link in enumerate(config['sponsors'], 1):
@@ -191,23 +180,19 @@ def get_activation_keyboard(sponsors_count):
 
 # ================= ПРОВЕРКА АДМИНА =================
 def is_admin(user_id):
-    """Проверяет, является ли пользователь админом"""
     admin_id = config.get('admin_id')
     if not admin_id:
         return False
     return str(user_id) == str(admin_id)
 
-# ================= ОБРАБОТЧИКИ КОМАНД =================
+# ================= ОБРАБОТЧИКИ =================
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = str(message.from_user.id)
     
     if user_id not in user_data:
-        user_data[user_id] = {
-            'clicks': set(),
-            'activated': False
-        }
+        user_data[user_id] = {'clicks': set(), 'activated': False}
     
     if is_admin(user_id):
         await message.answer(
@@ -220,20 +205,18 @@ async def cmd_start(message: Message):
             return
         
         if not config['sponsors']:
-            await message.answer("⏳ Бот еще настраивается администратором. Пожалуйста, подождите.")
+            await message.answer("⏳ Бот еще настраивается. Подождите.")
             return
         
         await message.answer(
             "👋 Добро пожаловать!\n\n"
-            "Для активации бота нажмите на все кнопки ниже и затем 'Подтвердить'.",
+            "Для активации нажмите на все кнопки ниже и 'Подтвердить'.",
             reply_markup=get_activation_keyboard(len(config['sponsors']))
         )
 
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
-    user_id = str(message.from_user.id)
-    
-    if not is_admin(user_id):
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ Доступ запрещен!")
         return
     
@@ -241,8 +224,6 @@ async def cmd_admin(message: Message):
         "🔐 Админ-панель",
         reply_markup=get_admin_panel()
     )
-
-# ================= ОБРАБОТЧИКИ АДМИН-ПАНЕЛИ =================
 
 @dp.callback_query(F.data == "admin_back")
 async def admin_back(callback: CallbackQuery):
@@ -266,17 +247,14 @@ async def admin_stats(callback: CallbackQuery):
     
     total_users = len(user_data)
     activated = sum(1 for u in user_data.values() if u['activated'])
-    sponsors_count = len(config['sponsors'])
     
     stats_text = (
-        f"📊 <b>Статистика бота</b>\n\n"
+        f"📊 <b>Статистика</b>\n\n"
         f"👥 Всего пользователей: <b>{total_users}</b>\n"
         f"✅ Активировано: <b>{activated}</b>\n"
-        f"📢 Количество спонсоров: <b>{sponsors_count}</b>\n"
-        f"📝 Текущий режим: <b>{config.get('mode', 1)}</b>\n"
-        f"🎯 Мин. кликов: <b>{config.get('min_clicks', 0)}</b>\n"
-        f"👑 Админ: <b>{config.get('admin_id', 'Не установлен')}</b>\n"
-        f"🕐 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        f"📢 Спонсоров: <b>{len(config['sponsors'])}</b>\n"
+        f"📝 Режим: <b>{config.get('mode', 1)}</b>\n"
+        f"👑 Админ: <b>{config.get('admin_id', 'Не установлен')}</b>"
     )
     
     await callback.message.edit_text(stats_text, parse_mode="HTML")
@@ -289,9 +267,9 @@ async def admin_add_sponsor(callback: CallbackQuery, state: FSMContext):
         return
     
     await callback.message.edit_text(
-        "📝 Введите ссылку на канал/спонсора:\n"
+        "📝 Введите ссылку на канал:\n"
         "Пример: https://t.me/channel_name\n\n"
-        "<i>Для отмены отправьте /cancel</i>",
+        "<i>Отмена: /cancel</i>",
         parse_mode="HTML"
     )
     await state.set_state(AdminStates.waiting_for_sponsor_link)
@@ -306,13 +284,8 @@ async def process_sponsor_link(message: Message, state: FSMContext):
     
     link = message.text.strip()
     
-    # Простая валидация ссылки
-    if not link.startswith(('https://t.me/', 'http://t.me/', 'https://www.t.me/')):
-        await message.answer(
-            "❌ Неверный формат ссылки!\n"
-            "Ссылка должна начинаться с https://t.me/\n"
-            "Попробуйте снова или отправьте /cancel"
-        )
+    if not link.startswith(('https://t.me/', 'http://t.me/')):
+        await message.answer("❌ Неверный формат! Ссылка должна начинаться с https://t.me/")
         return
     
     config['sponsors'].append(link)
@@ -320,9 +293,7 @@ async def process_sponsor_link(message: Message, state: FSMContext):
     
     if save_config(config):
         await message.answer(
-            f"✅ Ссылка добавлена!\n\n"
-            f"📢 Всего спонсоров: {len(config['sponsors'])}\n"
-            f"🎯 Мин. кликов: {config['min_clicks']}",
+            f"✅ Ссылка добавлена!\nВсего: {len(config['sponsors'])}",
             reply_markup=get_admin_panel()
         )
     else:
@@ -338,8 +309,7 @@ async def admin_list_sponsors(callback: CallbackQuery):
     
     if not config['sponsors']:
         await callback.message.edit_text(
-            "📋 Список спонсоров пуст!\n\n"
-            "Используйте '➕ Добавить спонсора' для добавления.",
+            "📋 Список пуст!",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]]
             )
@@ -358,6 +328,26 @@ async def admin_list_sponsors(callback: CallbackQuery):
     )
     await callback.answer()
 
+@dp.callback_query(F.data.startswith("sponsor_delete_"))
+async def sponsor_delete(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!")
+        return
+    
+    idx = int(callback.data.split("_")[2])
+    if idx >= len(config['sponsors']):
+        await callback.answer("❌ Не найден!")
+        return
+    
+    config['sponsors'].pop(idx)
+    config['min_clicks'] = len(config['sponsors'])
+    
+    if save_config(config):
+        await callback.answer("🗑 Удалено!")
+        await admin_list_sponsors(callback)
+    else:
+        await callback.answer("❌ Ошибка!")
+
 @dp.callback_query(F.data.startswith("sponsor_edit_"))
 async def sponsor_edit(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -365,15 +355,12 @@ async def sponsor_edit(callback: CallbackQuery, state: FSMContext):
         return
     
     idx = int(callback.data.split("_")[2])
-    if idx >= len(config['sponsors']):
-        await callback.answer("❌ Спонсор не найден!")
-        return
-    
     await state.update_data(edit_index=idx)
+    
     await callback.message.edit_text(
-        f"✏️ Редактирование спонсора #{idx+1}\n\n"
-        f"Текущая ссылка:\n{config['sponsors'][idx]}\n\n"
-        f"Введите новую ссылку или отправьте /cancel",
+        f"✏️ Редактирование #{idx+1}\n\n"
+        f"Текущая: {config['sponsors'][idx]}\n\n"
+        f"Введите новую ссылку",
         parse_mode="HTML"
     )
     await state.set_state(AdminStates.waiting_for_edit_sponsor)
@@ -390,69 +377,24 @@ async def process_edit_sponsor(message: Message, state: FSMContext):
     idx = data.get('edit_index')
     
     if idx is None or idx >= len(config['sponsors']):
-        await message.answer("❌ Ошибка: спонсор не найден", reply_markup=get_admin_panel())
+        await message.answer("❌ Ошибка!", reply_markup=get_admin_panel())
         await state.clear()
         return
     
     new_link = message.text.strip()
     
     if not new_link.startswith(('https://t.me/', 'http://t.me/')):
-        await message.answer(
-            "❌ Неверный формат ссылки!\n"
-            "Попробуйте снова или отправьте /cancel"
-        )
+        await message.answer("❌ Неверный формат!")
         return
     
     config['sponsors'][idx] = new_link
     
     if save_config(config):
-        await message.answer(
-            f"✅ Ссылка обновлена!\n\n"
-            f"Новая ссылка: {new_link}",
-            reply_markup=get_admin_panel()
-        )
+        await message.answer("✅ Обновлено!", reply_markup=get_admin_panel())
     else:
-        await message.answer("❌ Ошибка сохранения!", reply_markup=get_admin_panel())
+        await message.answer("❌ Ошибка!", reply_markup=get_admin_panel())
     
     await state.clear()
-
-@dp.callback_query(F.data.startswith("sponsor_delete_"))
-async def sponsor_delete(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    idx = int(callback.data.split("_")[2])
-    if idx >= len(config['sponsors']):
-        await callback.answer("❌ Спонсор не найден!")
-        return
-    
-    deleted = config['sponsors'].pop(idx)
-    config['min_clicks'] = len(config['sponsors'])
-    
-    if save_config(config):
-        await callback.answer(f"🗑 Ссылка удалена: {deleted[:30]}...")
-        
-        # Обновляем список
-        if config['sponsors']:
-            text = "📋 <b>Список спонсоров:</b>\n\n"
-            for i, link in enumerate(config['sponsors'], 1):
-                text += f"{i}. {link}\n"
-            
-            await callback.message.edit_text(
-                text,
-                parse_mode="HTML",
-                reply_markup=get_sponsors_list_keyboard()
-            )
-        else:
-            await callback.message.edit_text(
-                "📋 Список спонсоров пуст!",
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]]
-                )
-            )
-    else:
-        await callback.answer("❌ Ошибка удаления!")
 
 @dp.callback_query(F.data == "admin_settings")
 async def admin_settings(callback: CallbackQuery):
@@ -461,8 +403,7 @@ async def admin_settings(callback: CallbackQuery):
         return
     
     await callback.message.edit_text(
-        "⚙️ <b>Настройки бота</b>\n\n"
-        "Здесь вы можете изменить основные параметры.",
+        "⚙️ <b>Настройки</b>",
         parse_mode="HTML",
         reply_markup=get_settings_keyboard()
     )
@@ -475,10 +416,9 @@ async def settings_admin_id(callback: CallbackQuery, state: FSMContext):
         return
     
     await callback.message.edit_text(
-        "👑 Введите ID администратора:\n\n"
-        "Это может быть числовой ID или @username\n"
-        "Пример: 123456789 или @admin_username\n\n"
-        "<i>Для отмены отправьте /cancel</i>",
+        "👑 Введите ID администратора:\n"
+        "Пример: 123456789 или @username\n\n"
+        "<i>Отмена: /cancel</i>",
         parse_mode="HTML"
     )
     await state.set_state(AdminStates.waiting_for_admin_id)
@@ -493,39 +433,18 @@ async def process_admin_id(message: Message, state: FSMContext):
     
     admin_id = message.text.strip()
     
-    # Проверяем, что это либо число, либо @username
     if not (admin_id.isdigit() or admin_id.startswith('@')):
-        await message.answer(
-            "❌ Неверный формат!\n"
-            "ID должен быть числом или @username\n"
-            "Попробуйте снова или отправьте /cancel"
-        )
+        await message.answer("❌ Неверный формат!")
         return
     
     config['admin_id'] = admin_id
     
     if save_config(config):
-        await message.answer(
-            f"✅ Админ установлен: {admin_id}",
-            reply_markup=get_admin_panel()
-        )
+        await message.answer(f"✅ Админ установлен: {admin_id}", reply_markup=get_admin_panel())
     else:
-        await message.answer("❌ Ошибка сохранения!", reply_markup=get_admin_panel())
+        await message.answer("❌ Ошибка!", reply_markup=get_admin_panel())
     
     await state.clear()
-
-@dp.callback_query(F.data == "settings_min_clicks")
-async def settings_min_clicks(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Доступ запрещен!")
-        return
-    
-    # Просто показываем текущее значение
-    await callback.answer(
-        f"📌 Минимальное кол-во кликов: {config.get('min_clicks', 0)}\n"
-        f"(Автоматически равно количеству спонсоров)",
-        show_alert=True
-    )
 
 @dp.callback_query(F.data == "admin_modes")
 async def admin_modes(callback: CallbackQuery):
@@ -533,11 +452,11 @@ async def admin_modes(callback: CallbackQuery):
         await callback.answer("⛔ Доступ запрещен!")
         return
     
-    text = "📝 <b>Выберите режим сообщения</b>\n\n"
-    text += "Режим 1: Стандартное сообщение\n"
-    text += "Режим 2: С просьбой отправить скрин\n"
-    text += "Режим 3: С явной ссылкой на админа\n\n"
-    text += f"Текущий режим: <b>{config.get('mode', 1)}</b>"
+    text = "📝 <b>Выберите режим</b>\n\n"
+    text += "1: Стандартное сообщение\n"
+    text += "2: С просьбой о скрине\n"
+    text += "3: С ссылкой на админа\n\n"
+    text += f"Текущий: <b>{config.get('mode', 1)}</b>"
     
     await callback.message.edit_text(
         text,
@@ -557,37 +476,9 @@ async def mode_set(callback: CallbackQuery):
     
     if save_config(config):
         await callback.answer(f"✅ Режим {mode} установлен!")
-        await callback.message.edit_text(
-            f"📝 Режим изменен на {mode}\n\n"
-            f"Сообщение при активации:\n{MODE_MESSAGES.get(mode, '')}",
-            reply_markup=get_mode_keyboard()
-        )
+        await admin_modes(callback)
     else:
-        await callback.answer("❌ Ошибка сохранения!")
-
-# ================= ОБРАБОТЧИКИ ПОЛЬЗОВАТЕЛЯ =================
-
-@dp.callback_query(F.data == "activate")
-async def activate_user(callback: CallbackQuery):
-    user_id = str(callback.from_user.id)
-    
-    if user_id not in user_data:
-        user_data[user_id] = {'clicks': set(), 'activated': False}
-    
-    if user_data[user_id]['activated']:
-        await callback.answer("✅ Бот уже активирован!")
-        return
-    
-    if not config['sponsors']:
-        await callback.answer("⏳ Бот еще настраивается. Подождите.")
-        return
-    
-    await callback.message.delete()
-    await callback.message.answer(
-        "📢 Подпишитесь на все каналы и нажмите 'Подтвердить'",
-        reply_markup=get_activation_keyboard(len(config['sponsors']))
-    )
-    await callback.answer()
+        await callback.answer("❌ Ошибка!")
 
 @dp.callback_query(F.data.startswith("sponsor_click_"))
 async def process_sponsor_click(callback: CallbackQuery):
@@ -608,7 +499,7 @@ async def process_sponsor_click(callback: CallbackQuery):
             f"✅ Канал {idx+1} отмечен! ({len(user_data[user_id]['clicks'])}/{len(config['sponsors'])})"
         )
     else:
-        await callback.answer("ℹ️ Вы уже кликали на этот канал")
+        await callback.answer("ℹ️ Уже кликали")
 
 @dp.callback_query(F.data == "confirm_subscribe")
 async def confirm_subscribe(callback: CallbackQuery):
@@ -624,18 +515,18 @@ async def confirm_subscribe(callback: CallbackQuery):
     clicks = len(user_data[user_id]['clicks'])
     required = len(config['sponsors'])
     
-    if clicks >= required:
+    if clicks >= required and required > 0:
         user_data[user_id]['activated'] = True
         
         mode = config.get('mode', 1)
         admin = config.get('admin_id', 'администратору')
         
         if mode == 1:
-            msg = "✅ Бот активирован! Можете приступать к использованию."
+            msg = "✅ Бот активирован!"
         elif mode == 2:
-            msg = f"✅ Бот активирован! Пожалуйста, сделайте скриншот и отправьте его {admin}"
+            msg = f"✅ Бот активирован! Отправьте скриншот {admin}"
         elif mode == 3:
-            msg = f"✅ Бот активирован! Для подтверждения отправьте скриншот администратору: {admin}"
+            msg = f"✅ Бот активирован! Отправьте скриншот: {admin}"
         else:
             msg = "✅ Бот активирован!"
         
@@ -648,10 +539,9 @@ async def confirm_subscribe(callback: CallbackQuery):
             if admin_id:
                 await bot.send_message(
                     admin_id,
-                    f"🔔 Новый пользователь активировал бота!\n"
+                    f"🔔 Новая активация!\n"
                     f"👤 {callback.from_user.full_name}\n"
-                    f"🆔 @{callback.from_user.username or 'Нет юзернейма'}\n"
-                    f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+                    f"🆔 @{callback.from_user.username or 'Нет юзернейма'}"
                 )
         except:
             pass
@@ -659,29 +549,21 @@ async def confirm_subscribe(callback: CallbackQuery):
         await callback.answer("🎉 Активация успешна!")
     else:
         await callback.answer(
-            f"❌ Вы отметили только {clicks} из {required} каналов!\n"
-            f"Пожалуйста, пройдите по всем ссылкам.",
+            f"❌ Отмечено {clicks} из {required} каналов!",
             show_alert=True
         )
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer(
-        "❌ Действие отменено",
-        reply_markup=get_admin_panel() if is_admin(message.from_user.id) else None
-    )
+    await message.answer("❌ Отменено")
 
 # ================= ЗАПУСК =================
 async def main():
-    print("🤖 Бот запущен на BotHost.ru!")
-    print(f"📊 Текущий режим: {config.get('mode', 1)}")
-    print(f"📢 Количество спонсоров: {len(config['sponsors'])}")
+    print("🚀 Бот запущен!")
+    print(f"📊 Режим: {config.get('mode', 1)}")
+    print(f"📢 Спонсоров: {len(config['sponsors'])}")
     print(f"👑 Админ: {config.get('admin_id', 'Не установлен')}")
-    
-    # Очищаем старые данные (для тестов)
-    global user_data
-    user_data = {}
     
     await dp.start_polling(bot)
 
