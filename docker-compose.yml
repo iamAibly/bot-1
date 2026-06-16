@@ -8,9 +8,10 @@ services:
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
       - CONFIG_FILE=/app/data/config.json
-      - BOT_CONFIG=${BOT_CONFIG:-}
     volumes:
       - ./data:/app/data
-      - ./config.json:/app/config.json:ro
-    ports:
-      - "8080:8080"  # Для healthcheck (опционально)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
